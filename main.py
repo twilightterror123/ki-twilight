@@ -273,7 +273,7 @@ class EvolutionEngine:
         self.patterns[pattern] += 1
         vec_id = f"v{int(time.time_ns())}_{random.randint(0,9999)}"
         vec = [random.random() for _ in range(10)]
-        self.vectors[vec_id] vec
+        self.vectors[vec_id] = vec
         if len(self.vectors) > 10000:
             for k in list(self.vectors.keys())[:100]:
                 del self.vectors[k]
